@@ -1,0 +1,156 @@
+import os
+import aiohttp
+import aiofiles
+import traceback
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance, ImageOps
+from py_yt import VideosSearch
+from ShrutiMusic import app
+import math
+
+CACHE_DIR = Path("cache")
+CACHE_DIR.mkdir(exist_ok=True)
+
+CANVAS_W, CANVAS_H = 1280, 720
+
+FONT_REGULAR_PATH = "ShrutiMusic/assets/font2.ttf"
+FONT_BOLD_PATH = "ShrutiMusic/assets/font3.ttf"
+DEFAULT_THUMB = "ShrutiMusic/assets/ShrutiBots.jpg"
+
+
+async def gen_thumb(videoid: str):
+    url = f"https://www.youtube.com/watch?v={videoid}"
+
+    # ================= FETCH DATA =================
+    try:
+        results = VideosSearch(url, limit=1)
+        result = (await results.next())["result"][0]
+
+        title = result.get("title", "Unknown Title")
+        duration = result.get("duration", "3:00")
+        thumburl = result["thumbnails"][0]["url"].split("?")[0]
+        views = result.get("viewCount", {}).get("short", "1M views")
+        channel = result.get("channel", {}).get("name", "Unknown Channel")
+
+        thumb_path = CACHE_DIR / f"thumb{videoid}.jpg"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(thumburl) as resp:
+                async with aiofiles.open(thumb_path, "wb") as f:
+                    await f.write(await resp.read())
+
+        base_img = Image.open(thumb_path).convert("RGB")
+
+    except:
+        base_img = Image.open(DEFAULT_THUMB).convert("RGB")
+        title = "Music Title"
+        duration = "3:00"
+        views = "1M views"
+        channel = "Music Channel"
+        thumb_path = None
+
+    try:
+        # ================= BACKGROUND =================
+        bg = base_img.resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
+        bg = bg.filter(ImageFilter.GaussianBlur(28))
+
+        bg = ImageEnhance.Color(bg).enhance(1.25)
+        bg = ImageEnhance.Contrast(bg).enhance(1.2)
+        bg = ImageEnhance.Brightness(bg).enhance(1.05)
+
+        overlay = Image.new("RGBA", (CANVAS_W, CANVAS_H), (0, 0, 0, 170))
+        canvas = Image.alpha_composite(bg.convert("RGBA"), overlay)
+        draw = ImageDraw.Draw(canvas)
+
+        # ================= LEFT ALBUM =================
+        album_size = 260
+        album = base_img.resize((album_size, album_size), Image.LANCZOS)
+
+        mask = Image.new("L", (album_size, album_size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, album_size, album_size), fill=255)
+        album.putalpha(mask)
+
+        album_x = 90
+        album_y = CANVAS_H // 2 - album_size // 2
+
+        shadow = Image.new("RGBA", (album_size + 30, album_size + 30), (0, 0, 0, 0))
+        ImageDraw.Draw(shadow).ellipse(
+            (15, 15, album_size + 15, album_size + 15),
+            fill=(0, 0, 0, 140)
+        )
+        shadow = shadow.filter(ImageFilter.GaussianBlur(20))
+        canvas.paste(shadow, (album_x - 15, album_y - 15), shadow)
+
+        canvas.paste(album, (album_x, album_y), album)
+
+        # ================= TEXT =================
+        text_x = album_x + album_size + 60
+        text_y = album_y + 25
+
+        font_title = ImageFont.truetype(FONT_BOLD_PATH, 42)
+        font_meta = ImageFont.truetype(FONT_BOLD_PATH, 26)
+        font_time = ImageFont.truetype(FONT_BOLD_PATH, 22)
+
+        max_width = CANVAS_W - text_x - 80
+        show_title = title
+        while draw.textlength(show_title, font_title) > max_width and len(show_title) > 5:
+            show_title = show_title[:-1]
+        if show_title != title:
+            show_title += "..."
+
+        draw.text((text_x, text_y), show_title, font=font_title, fill=(255, 255, 255))
+        draw.text(
+            (text_x, text_y + 55),
+            f"{channel}  |  {views}",
+            font=font_meta,
+            fill=(220, 220, 220)
+        )
+
+        # ================= PROGRESS BAR =================
+        bar_y = text_y + 120
+        bar_w = 420
+        bar_h = 7
+        progress = int(bar_w * 0.6)
+
+        draw.rounded_rectangle(
+            (text_x, bar_y, text_x + bar_w, bar_y + bar_h),
+            radius=4, fill=(160, 160, 160, 180)
+        )
+        draw.rounded_rectangle(
+            (text_x, bar_y, text_x + progress, bar_y + bar_h),
+            radius=4, fill=(30, 215, 96)
+        )
+
+        draw.ellipse(
+            (text_x + progress - 6, bar_y - 4,
+             text_x + progress + 6, bar_y + bar_h + 4),
+            fill=(30, 215, 96)
+        )
+
+        draw.text((text_x, bar_y + 14), "00:00", font=font_time, fill=(200, 200, 200))
+        draw.text(
+            (text_x + bar_w - draw.textlength(duration, font_time),
+             bar_y + 14),
+            duration, font=font_time, fill=(200, 200, 200)
+        )
+
+        # ================= SAVE =================
+        output = CACHE_DIR / f"{videoid}_final.jpg"
+        canvas.convert("RGB").save(output, quality=95)
+
+        try:
+            if thumb_path and thumb_path.exists():
+                os.remove(thumb_path)
+        except:
+            pass
+
+        return str(output)
+
+    except Exception as e:
+        print("[Thumbnail Error]", e)
+        traceback.print_exc()
+        return None
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(gen_thumb("dQw4w9WgXcQ"))
